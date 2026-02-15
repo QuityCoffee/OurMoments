@@ -1,17 +1,16 @@
 package ru.phb.ourmoments
-
-import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.imePadding
 import androidx.annotation.OptIn
+import androidx.compose.animation.*
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.DateRange
-import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.LocationOn
+import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -24,144 +23,186 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.media3.common.MediaItem
+import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
 import coil.compose.AsyncImage
 
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.ui.input.pointer.pointerInput
+
 @OptIn(UnstableApi::class)
 @Composable
 fun PhotoDetailScreen(
     task: LoveTask,
-    isSecretMode: Boolean,
     onDismiss: () -> Unit,
     onSaveDetails: (date: String, location: String) -> Unit,
-    onDelete: () -> Unit
+    onDelete: (deleteFromServer: Boolean) -> Unit
 ) {
     val context = LocalContext.current
+    var isPanelVisible by remember { mutableStateOf(false) }
+    var showDeleteDialog by remember { mutableStateOf(false) }
+    val focusManager = LocalFocusManager.current
     var dateText by remember { mutableStateOf(task.dateTaken) }
     var locationText by remember { mutableStateOf(task.location) }
 
-    // Настройки для конспирации
-    val titleText = if (isSecretMode) "System Log #${task.id + 400}" else "Файл №${task.id + 1}"
-    val descText = if (isSecretMode) "Error: Data corruption. Check logs." else task.description
-    val titleColor = if (isSecretMode) Color(0xFF4CAF50) else Color(0xFFE91E63)
+    val isVideo = task.getIsVideo(context)
 
-    // Инициализируем плеер для видео (будет работать только если это видео)
+    // Плеер для полного экрана (со звуком)
     val exoPlayer = remember {
         ExoPlayer.Builder(context).build().apply {
-            setMediaItem(MediaItem.fromUri(task.completedUri ?: ""))
-            prepare()
-            playWhenReady = true // Автозапуск со звуком
+            if (task.completedUri != null) {
+                setMediaItem(MediaItem.fromUri(task.completedUri!!))
+                prepare()
+                playWhenReady = true
+                repeatMode = Player.REPEAT_MODE_ONE
+            }
         }
     }
 
-    // Освобождаем память при закрытии экрана
-    DisposableEffect(Unit) {
-        onDispose {
-            exoPlayer.release()
-        }
-    }
-
-    BackHandler { onDismiss() }
+    DisposableEffect(Unit) { onDispose { exoPlayer.release() } }
 
     Box(
         modifier = Modifier
             .fillMaxSize()
             .background(Color.Black)
-            .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) { }
+            .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) {
+                isPanelVisible = !isPanelVisible
+            }
     ) {
-        // --- КОНТЕНТ (ФОТО ИЛИ ВИДЕО) ---
-        if (task.isVideo) {
+        // 1. Контент
+        if (isVideo) {
             AndroidView(
-                factory = {
-                    PlayerView(it).apply {
+                factory = { ctx ->
+                    PlayerView(ctx).apply {
                         player = exoPlayer
-                        useController = true // Показываем кнопки управления (пауза, громкость)
+                        useController = false
+                        resizeMode = androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_FIT
                         setBackgroundColor(android.graphics.Color.BLACK)
                     }
                 },
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(bottom = 280.dp)
+                modifier = Modifier.fillMaxSize()
             )
         } else {
             AsyncImage(
                 model = task.completedUri,
                 contentDescription = null,
                 contentScale = ContentScale.Fit,
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(bottom = 280.dp)
+                modifier = Modifier.fillMaxSize()
             )
         }
 
-        // Кнопка закрыть
+        // 2. Кнопка Закрыть
         IconButton(
             onClick = onDismiss,
-            modifier = Modifier
-                .align(Alignment.TopEnd)
-                .statusBarsPadding()
-                .padding(16.dp)
-                .background(Color.Black.copy(alpha = 0.5f), RoundedCornerShape(50))
+            modifier = Modifier.align(Alignment.TopEnd).statusBarsPadding().padding(16.dp)
+                .background(Color.Black.copy(alpha = 0.5f), CircleShape)
         ) {
-            Icon(Icons.Default.Close, contentDescription = "Close", tint = Color.White)
+            Icon(Icons.Default.Close, "Close", tint = Color.White)
         }
 
-        // Нижняя панель
-        Column(
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .fillMaxWidth()
-                .background(Color.White, RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp))
-                .windowInsetsPadding(WindowInsets.navigationBars)
-                .padding(24.dp)
+        // 3. Кнопка Редактировать (если панель скрыта)
+        AnimatedVisibility(
+            visible = !isPanelVisible,
+            modifier = Modifier.align(Alignment.BottomEnd).navigationBarsPadding().padding(24.dp)
         ) {
-            Text(text = titleText, fontSize = 22.sp, fontWeight = FontWeight.ExtraBold, color = titleColor)
-            Text(text = descText, fontSize = 16.sp, modifier = Modifier.padding(top = 8.dp, bottom = 20.dp), color = Color.Black)
+            FloatingActionButton(
+                onClick = { isPanelVisible = true },
+                containerColor = Color(0xFFE91E63),
+                contentColor = Color.White,
+                shape = CircleShape
+            ) {
+                Icon(Icons.Default.Edit, "Edit")
+            }
+        }
 
-            OutlinedTextField(
-                value = dateText,
-                onValueChange = { dateText = it },
-                label = { Text(if (isSecretMode) "TS-Value" else "Когда это было?") },
-                leadingIcon = { Icon(Icons.Default.DateRange, null) },
-                modifier = Modifier.fillMaxWidth(),
-                singleLine = true
-            )
+        // 4. Панель редактирования
+        AnimatedVisibility(
+            visible = isPanelVisible,
+            enter = slideInVertically { it },
+            exit = slideOutVertically { it },
+            modifier = Modifier.align(Alignment.BottomCenter)
 
-            Spacer(modifier = Modifier.height(8.dp))
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(Color.White, RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp))
+                    .padding(24.dp)
 
-            OutlinedTextField(
-                value = locationText,
-                onValueChange = { locationText = it },
-                label = { Text(if (isSecretMode) "Loc-Source" else "Где это было?") },
-                leadingIcon = { Icon(Icons.Default.LocationOn, null) },
-                modifier = Modifier.fillMaxWidth(),
-                singleLine = true
-            )
+                    .navigationBarsPadding() // Отступ для трех кнопок навигации
+                    .imePadding()            // Отступ для выезжающей клавиатуры
 
-            Spacer(modifier = Modifier.height(24.dp))
+                    .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) {} // Перехват клика
+            ) {
+                Text("Фото №${task.id + 1}", fontSize = 20.sp, fontWeight = FontWeight.Bold, color = Color(0xFFE91E63))
+                Text(task.description, fontSize = 14.sp, color = Color.Gray, modifier = Modifier.padding(vertical = 8.dp))
 
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                Button(
-                    onClick = onDelete,
-                    colors = ButtonDefaults.buttonColors(containerColor = if (isSecretMode) Color(0xFFE8F5E9) else Color(0xFFFFEBEE)),
-                    modifier = Modifier.weight(1f).padding(end = 8.dp),
-                    shape = RoundedCornerShape(12.dp)
-                ) {
-                    Icon(Icons.Default.Delete, null, tint = Color.Red)
-                    Text("Удалить", color = Color.Red, modifier = Modifier.padding(start = 4.dp))
-                }
+                OutlinedTextField(value = dateText, onValueChange = { dateText = it }, label = { Text("Дата") }, modifier = Modifier.fillMaxWidth())
+                Spacer(modifier = Modifier.height(8.dp))
+                OutlinedTextField(value = locationText, onValueChange = { locationText = it }, label = { Text("Место") }, modifier = Modifier.fillMaxWidth())
 
-                Button(
-                    onClick = { onSaveDetails(dateText, locationText) },
-                    colors = ButtonDefaults.buttonColors(containerColor = titleColor),
-                    modifier = Modifier.weight(1f).padding(start = 8.dp),
-                    shape = RoundedCornerShape(12.dp)
-                ) {
-                    Text("Сохранить")
+                Spacer(modifier = Modifier.height(16.dp))
+
+                Row {
+                    Button(
+                        onClick = { showDeleteDialog = true }, // Открываем диалог!
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFFEBEE)),
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text("Удалить", color = Color.Red)
+                    }
+                    Spacer(modifier = Modifier.width(16.dp))
+                    Button(onClick = { onSaveDetails(dateText, locationText); isPanelVisible = false }, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFE91E63)), modifier = Modifier.weight(1f)) {
+                        Text("Сохранить")
+                    }
                 }
             }
         }
+    }
+// --- ДИАЛОГ ПОДТВЕРЖДЕНИЯ УДАЛЕНИЯ ---
+    if (showDeleteDialog) {
+        AlertDialog(
+            onDismissRequest = { showDeleteDialog = false },
+            title = { Text("Удаление воспоминания", fontWeight = FontWeight.Bold) },
+            text = {
+                Column {
+                    Text("Выберите, откуда удалить это задание:")
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    Button(
+                        onClick = {
+                            showDeleteDialog = false
+
+                            onDelete(false) // Только локально
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFF5F5F5), contentColor = Color.Black),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("Только из приложения")
+                    }
+
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    Button(
+                        onClick = {
+                            showDeleteDialog = false
+                            onDelete(true) // Отовсюду
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFFEBEE), contentColor = Color.Red),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("С приложения и с сервера")
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showDeleteDialog = false }) {
+                    Text("Отмена", color = Color.Gray)
+                }
+            }
+        )
     }
 }

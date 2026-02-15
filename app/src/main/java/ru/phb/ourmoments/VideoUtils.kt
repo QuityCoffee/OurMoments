@@ -13,25 +13,22 @@ import androidx.media3.ui.PlayerView
 
 @OptIn(UnstableApi::class)
 @Composable
-fun VideoPreivew(uri: String, modifier: Modifier = Modifier) {
+fun VideoPreview(uri: String, modifier: Modifier = Modifier) {
     val context = LocalContext.current
 
-    // Создаем плеер
     val exoPlayer = remember {
         ExoPlayer.Builder(context).build().apply {
             repeatMode = Player.REPEAT_MODE_ALL
-            volume = 0f // В сетке без звука
+            volume = 0f // Без звука в сетке
             playWhenReady = true
         }
     }
 
-    // Загружаем видео
     LaunchedEffect(uri) {
         exoPlayer.setMediaItem(MediaItem.fromUri(uri))
         exoPlayer.prepare()
     }
 
-    // Закрываем плеер при уходе с экрана
     DisposableEffect(Unit) {
         onDispose { exoPlayer.release() }
     }
@@ -41,7 +38,6 @@ fun VideoPreivew(uri: String, modifier: Modifier = Modifier) {
             PlayerView(ctx).apply {
                 player = exoPlayer
                 useController = false
-                // ТЕПЕРЬ ЭТО СРАБОТАЕТ:
                 resizeMode = androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_ZOOM
             }
         },
