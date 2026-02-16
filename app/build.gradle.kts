@@ -101,7 +101,9 @@ dependencies {
     implementation("io.coil-kt:coil-video:2.5.0")
     implementation("androidx.work:work-runtime-ktx:2.9.0")
 
-
+    implementation("com.squareup.retrofit2:retrofit:2.9.0")
+    implementation("com.squareup.retrofit2:converter-gson:2.9.0")
+    implementation("com.squareup.okhttp3:logging-interceptor:4.11.0")
 
     val ktor_version = "2.3.7"
     implementation("io.ktor:ktor-client-core:$ktor_version")

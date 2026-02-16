@@ -28,6 +28,7 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             OurMomentsTheme()  {
+
                 val context = LocalContext.current
                 var updateInfo by remember { mutableStateOf<UpdateInfo?>(null) }
 
