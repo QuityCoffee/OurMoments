@@ -22,7 +22,7 @@ class MainActivity : ComponentActivity() {
         // ==========================================
         // РУБИЛЬНИК СРЕДЫ (ПЕРЕД РЕЛИЗОМ МЕНЯТЬ НА PROD!)
         // ==========================================
-        AppConfig.currentEnv = Environment.PROD
+        AppConfig.currentEnv = Environment.WSL
         // ==========================================
 
 

@@ -2,7 +2,8 @@ package ru.phb.ourmoments
 
 enum class Environment {
     TEST,
-    PROD
+    PROD,
+    WSL
 }
 
 object AppConfig {
@@ -14,12 +15,14 @@ object AppConfig {
         get() = when (currentEnv) {
             Environment.PROD -> "http://api.quityrcr.beget.tech/api.php"
             Environment.TEST -> "http://api.quityrcr.beget.tech/test/apitest.php"
+            Environment.WSL -> "http://192.168.137.46:5000/"
         }
 
     // При желании можно сделать разные ключи безопасности
     val apiKey: String
         get() = when (currentEnv) {
             Environment.PROD -> "MyLoveSecret2026quityromgmailcom"
-            Environment.TEST -> "MyLoveSecret2026quityromgmailcom" // Если поменял ключ в test/api.php
+            Environment.TEST -> "MyLoveSecret2026quityromgmailcom"
+            Environment.WSL -> "MyLoveSecret2026quityromgmailcom"
         }
 }

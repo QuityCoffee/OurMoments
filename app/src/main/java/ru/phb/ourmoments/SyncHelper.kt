@@ -60,7 +60,22 @@ object SyncHelper {
             false
         }
     }
-
+    // Внутри object SyncHelper в файле SyncHelper.kt
+    suspend fun deleteTask(id: Int): Boolean {
+        return try {
+            // Отправляем запрос на удаление в наш .NET API
+            val response = client.post("${AppConfig.apiUrl}/api/upload/delete") {
+                // Передаем ID задачи через параметры формы
+                setBody(FormDataContent(Parameters.build {
+                    append("id", id.toString())
+                }))
+            }
+            response.status.isSuccess()
+        } catch (e: Exception) {
+            e.printStackTrace()
+            false
+        }
+    }
     // --- ЗАГРУЗКА ВИДЕО (ТЯЖЕЛЫЕ ФАЙЛЫ + ПРОГРЕСС) ---
     suspend fun uploadTask(
         context: Context,
@@ -97,6 +112,7 @@ object SyncHelper {
                 setBody(MultiPartFormDataContent(
                     formData {
                         append("id", task.id.toString())
+                        append("description", task.description)
                         append("date_taken", task.dateTaken)
                         append("location", task.location)
 
