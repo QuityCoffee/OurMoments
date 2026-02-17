@@ -19,7 +19,7 @@ import org.json.JSONObject
 import java.io.File
 
 object UpdateManager {
-    private const val UPDATE_JSON_URL = "http://api.quityrcr.beget.tech/update.json" // Ссылка на твой JSON
+    private const val UPDATE_JSON_URL = "http://quityrom.ru/update.json" // Ссылка на твой JSON
 
     // Проверяем версию
     suspend fun checkForUpdate(context: Context): UpdateInfo? = withContext(Dispatchers.IO) {

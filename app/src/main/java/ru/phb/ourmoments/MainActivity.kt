@@ -15,20 +15,45 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
 import ru.phb.ourmoments.ui.theme.OurMomentsTheme
 
+// ==========================================
+// 1. КОНФИГУРАЦИЯ ПРИЛОЖЕНИЯ (AppConfig)
+// ==========================================
+enum class Environment {
+    TEST,
+    PROD
+}
+
+object AppConfig {
+    // По умолчанию ставим ТЕСТ, чтобы случайно не сломать Прод при разработке
+    var currentEnv: Environment = Environment.PROD
+
+    // Динамически отдаем нужный URL в зависимости от выбранной среды
+    val apiUrl: String
+        get() = when (currentEnv) {
+            Environment.PROD -> "http://quityrom.ru/api.php"
+            Environment.TEST -> "http://quityrom.ru/test/apitest.php"
+        }
+
+    // При желании можно сделать разные ключи безопасности
+    val apiKey: String
+        get() = when (currentEnv) {
+            Environment.PROD -> "MyLoveSecret2026quityromgmailcom"
+            Environment.TEST -> "MyLoveSecret2026quityromgmailcom" // Если поменял ключ в test/api.php
+        }
+}
+
+// ==========================================
+// 2. ГЛАВНЫЙ ЭКРАН (MainActivity)
+// ==========================================
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // ==========================================
         // РУБИЛЬНИК СРЕДЫ (ПЕРЕД РЕЛИЗОМ МЕНЯТЬ НА PROD!)
-        // ==========================================
-        AppConfig.currentEnv = Environment.WSL
-        // ==========================================
-
+        AppConfig.currentEnv = Environment.PROD
 
         setContent {
-            OurMomentsTheme()  {
-
+            OurMomentsTheme {
                 val context = LocalContext.current
                 var updateInfo by remember { mutableStateOf<UpdateInfo?>(null) }
 

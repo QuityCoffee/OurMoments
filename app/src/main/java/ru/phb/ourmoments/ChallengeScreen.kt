@@ -42,16 +42,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
-import androidx.work.Constraints
-import androidx.work.ExistingWorkPolicy
-import androidx.work.NetworkType
-import androidx.work.OneTimeWorkRequestBuilder
-import androidx.work.WorkManager
-import androidx.work.workDataOf
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import kotlin.math.abs
 import kotlin.math.pow
 import kotlin.math.roundToInt
 import kotlin.random.Random
@@ -191,32 +184,6 @@ fun ChallengeScreen() {
         currentPickingTaskId = null
     }
 
-    val exportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/zip")) { uri ->
-        if (uri != null) {
-            scope.launch(Dispatchers.IO) {
-                val zipFile = BackupHelper.createBackup(context, tasks)
-                context.contentResolver.openOutputStream(uri)?.use { output ->
-                    zipFile.inputStream().copyTo(output)
-                }
-                withContext(Dispatchers.Main) { Toast.makeText(context, "Архив сохранен!", Toast.LENGTH_SHORT).show() }
-            }
-        }
-    }
-
-    val importLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        if (uri != null) {
-            scope.launch(Dispatchers.IO) {
-                BackupHelper.restoreBackup(context, uri) { id, newUri, date, loc ->
-                    val idx = tasks.indexOfFirst { it.id == id }
-                    if (idx != -1) {
-                        tasks[idx] = tasks[idx].copy(completedUri = newUri, dateTaken = date, location = loc)
-                    }
-                }
-                withContext(Dispatchers.Main) { Toast.makeText(context, "Восстановлено!", Toast.LENGTH_SHORT).show() }
-            }
-        }
-    }
-
     // --- 3. ФИЛЬТРАЦИЯ ---
     val displayedTasks = if (searchQuery.isBlank()) tasks else {
         tasks.filter { (it.id + 1).toString() == searchQuery || it.description.contains(searchQuery, ignoreCase = true) }
@@ -240,34 +207,72 @@ fun ChallengeScreen() {
                         onSyncClick = {
                             if (!isSyncing) {
                                 isSyncing = true
+                                // ЗАПУСКАЕМ КОРУТИНУ ДЛЯ ФОНОВЫХ ЗАДАЧ:
                                 scope.launch(Dispatchers.IO) {
+
+                                    // 1. Отправляем на сервер наши изменения
                                     tasks.filter { it.completedUri != null }.forEach { task ->
                                         if (task.completedUri?.startsWith("http") == false) {
-                                            SyncHelper.uploadTask(context, task) { /* здесь прогресс не нужен */ }
+                                            SyncHelper.uploadTask(context, task) { /* прогресс */ }
                                         }
                                         else SyncHelper.updateTaskDetails(task)
                                     }
+
+                                    // 2. Скачиваем данные с сервера
                                     val serverTasks = SyncHelper.fetchServerData()
-                                    withContext(Dispatchers.Main) {
-                                        serverTasks.forEach { sTask ->
-                                            val idx = tasks.indexOfFirst { it.id == sTask.id }
-                                            if (idx != -1 && sTask.media_url != null) {
-                                                tasks[idx] = tasks[idx].copy(
-                                                    completedUri = sTask.media_url,
-                                                    dateTaken = sTask.date_taken ?: "",
-                                                    location = sTask.location ?: "",
-                                                    description = sTask.description ?: tasks[idx].description
-                                                )
+
+                                    // 3. Обрабатываем пришедшие задания
+                                    serverTasks.forEach { sTask ->
+                                        val idx = tasks.indexOfFirst { it.id == sTask.id }
+                                        if (idx != -1 && sTask.media_url != null) {
+
+                                            val localUri = sharedPrefs.getString("task_${sTask.id}_uri", null)
+
+                                            if (localUri == null) {
+                                                // Файла у нас нет, надо скачивать!
+                                                withContext(Dispatchers.Main) {
+                                                    Toast.makeText(context, "Скачиваю новый момент №${sTask.id + 1}...", Toast.LENGTH_SHORT).show()
+                                                }
+
+                                                val isVideo = sTask.media_type == "video" || sTask.media_url.endsWith(".mp4")
+                                                // Вызываем наш внедренный класс из TaskMediaHelpers:
+                                                val downloadedUri = GalleryDownloader.downloadAndSaveToGallery(context, sTask.media_url, sTask.id, isVideo)
+
+                                                if (downloadedUri != null) {
+                                                    sharedPrefs.edit().putString("task_${sTask.id}_uri", downloadedUri).apply()
+
+                                                    // Обновляем UI в главном потоке
+                                                    withContext(Dispatchers.Main) {
+                                                        tasks[idx] = tasks[idx].copy(
+                                                            completedUri = downloadedUri,
+                                                            dateTaken = sTask.date_taken ?: "",
+                                                            location = sTask.location ?: "",
+                                                            description = sTask.description ?: tasks[idx].description
+                                                        )
+                                                    }
+                                                }
+                                            } else {
+                                                // Файл уже есть в локальной Галерее, просто обновляем
+                                                withContext(Dispatchers.Main) {
+                                                    tasks[idx] = tasks[idx].copy(
+                                                        completedUri = localUri,
+                                                        dateTaken = sTask.date_taken ?: "",
+                                                        location = sTask.location ?: "",
+                                                        description = sTask.description ?: tasks[idx].description
+                                                    )
+                                                }
                                             }
                                         }
+                                    }
+
+                                    // 4. Завершаем синхронизацию
+                                    withContext(Dispatchers.Main) {
                                         isSyncing = false
                                         Toast.makeText(context, "Синхронизация завершена!", Toast.LENGTH_SHORT).show()
                                     }
                                 }
                             }
-                        },
-                        onBackupClick = { exportLauncher.launch("OurMoments_${System.currentTimeMillis()}.zip") },
-                        onRestoreClick = { importLauncher.launch(arrayOf("application/zip", "application/octet-stream")) }
+                        }
                     )
 
                     Box(modifier = Modifier.fillMaxSize()) {
@@ -387,7 +392,6 @@ fun uploadWithProgress(
 ) {
     scope.launch(Dispatchers.IO) {
         try {
-            // Сбрасываем флаг сжатия, ставим флаг загрузки
             withContext(Dispatchers.Main) {
                 val idx = tasks.indexOfFirst { it.id == taskToUpload.id }
                 if (idx != -1) tasks[idx] = tasks[idx].copy(isCompressing = false, isUploading = true, uploadProgress = 0f)
@@ -401,7 +405,7 @@ fun uploadWithProgress(
             }
             withContext(Dispatchers.Main) {
                 Toast.makeText(context, "✅ Загружено на сервер!", Toast.LENGTH_SHORT).show()
-                onSuccessCleanup() // Удаляем временный файл если нужно
+                onSuccessCleanup()
             }
         } catch (e: Exception) {
             e.printStackTrace()
@@ -415,7 +419,6 @@ fun uploadWithProgress(
     }
 }
 
-// TopBar остается без изменений, так как он работал корректно.
 // --- ВЫНЕСЕННАЯ ВЕРХНЯЯ ПАНЕЛЬ ---
 @Composable
 fun ChallengeTopBar(
@@ -426,9 +429,7 @@ fun ChallengeTopBar(
     onSearchQueryChange: (String) -> Unit,
     onSearchToggle: (Boolean) -> Unit,
     focusRequester: FocusRequester,
-    onSyncClick: () -> Unit,
-    onBackupClick: () -> Unit,
-    onRestoreClick: () -> Unit
+    onSyncClick: () -> Unit
 ) {
     var showMenu by remember { mutableStateOf(false) }
 
@@ -491,20 +492,6 @@ fun ChallengeTopBar(
                             onClick = {
                                 showMenu = false
                                 onSyncClick()
-                            }
-                        )
-                        DropdownMenuItem(
-                            text = { Text("Сохранить архив (Backup)") },
-                            onClick = {
-                                showMenu = false
-                                onBackupClick()
-                            }
-                        )
-                        DropdownMenuItem(
-                            text = { Text("Загрузить архив") },
-                            onClick = {
-                                showMenu = false
-                                onRestoreClick()
                             }
                         )
                     }

@@ -15,8 +15,10 @@ import io.ktor.http.*
 import io.ktor.serialization.kotlinx.json.*
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.Serializable
+// ВАЖНЫЙ ИМПОРТ ДЛЯ ПОТОКОВОЙ ПЕРЕДАЧИ (СТРИМИНГА):
 import io.ktor.utils.io.jvm.javaio.toByteReadChannel
 
+// Модель ответа от сервера
 @SuppressLint("UnsafeOptInUsageError")
 @Serializable
 data class ServerTask(
@@ -30,45 +32,32 @@ data class ServerTask(
 
 @SuppressLint("UnsafeOptInUsageError")
 @Serializable
-data class SyncResponse(val tasks: List<ServerTask>)
+data class SyncResponse(val tasks: List<ServerTask> = emptyList()) {
+
+}
 
 object SyncHelper {
 
-
-    private const val BASE_URL = "http://192.168.137.46:5000/"
-
+    // Основной клиент для легких запросов
     private val client = HttpClient(Android) {
         install(ContentNegotiation) {
             json(Json { ignoreUnknownKeys = true })
         }
     }
 
-    // --- ОБНОВЛЕНИЕ ТЕКСТА (Пока остается на старом API или ждет реализации в C#) ---
+    // --- ОБНОВЛЕНИЕ ТЕКСТА (БЕЗ ФАЙЛА) ---
     suspend fun updateTaskDetails(task: LoveTask): Boolean {
         return try {
             val response = client.submitForm(
-                url = "${BASE_URL}/api/upload/details", // Путь для будущего контроллера
+                url = AppConfig.apiUrl,
                 formParameters = Parameters.build {
+                    append("action", "upload")
                     append("id", task.id.toString())
                     append("date_taken", task.dateTaken)
                     append("location", task.location)
                 }
-            )
-            response.status.isSuccess()
-        } catch (e: Exception) {
-            e.printStackTrace()
-            false
-        }
-    }
-    // Внутри object SyncHelper в файле SyncHelper.kt
-    suspend fun deleteTask(id: Int): Boolean {
-        return try {
-            // Отправляем запрос на удаление в наш .NET API
-            val response = client.post("${AppConfig.apiUrl}/api/upload/delete") {
-                // Передаем ID задачи через параметры формы
-                setBody(FormDataContent(Parameters.build {
-                    append("id", id.toString())
-                }))
+            ) {
+                headers { append(HttpHeaders.Authorization, "Bearer ${AppConfig.apiKey}") }
             }
             response.status.isSuccess()
         } catch (e: Exception) {
@@ -76,49 +65,79 @@ object SyncHelper {
             false
         }
     }
-    // --- ЗАГРУЗКА ВИДЕО (ТЯЖЕЛЫЕ ФАЙЛЫ + ПРОГРЕСС) ---
+
+    // --- УДАЛЕНИЕ ---
+    suspend fun deleteTask(id: Int): Boolean {
+        return try {
+            val response = client.submitForm(
+                url = AppConfig.apiUrl,
+                formParameters = Parameters.build {
+                    append("action", "delete")
+                    append("id", id.toString())
+                }
+            ) {
+                headers { append(HttpHeaders.Authorization, "Bearer ${AppConfig.apiKey}") }
+            }
+            response.status.isSuccess()
+        } catch (e: Exception) {
+            e.printStackTrace()
+            false
+        }
+    }
+
+    // --- ЗАГРУЗКА (ТЯЖЕЛЫЕ ФАЙЛЫ + ПРОГРЕСС) ---
     suspend fun uploadTask(
         context: Context,
         task: LoveTask,
         onProgress: (Float) -> Unit
     ) {
+        // Создаем отдельный клиент, чтобы задать ему "резиновые" таймауты
         val uploadClient = HttpClient(Android) {
             install(ContentNegotiation) { json(Json { ignoreUnknownKeys = true }) }
             install(HttpTimeout) {
-                requestTimeoutMillis = 3600000L // 1 час (для очень тяжелых видео)
+                requestTimeoutMillis = 3600000L // 1 час
                 connectTimeoutMillis = 60000L   // 1 минута
-                socketTimeoutMillis = 3600000L
+                socketTimeoutMillis = 3600000L  // 1 час
             }
         }
 
         val uriStr = task.completedUri ?: ""
         val uri = Uri.parse(uriStr)
 
-        // Определяем тип файла
+// 1. Пытаемся получить тип через систему (работает для оригиналов из галереи)
         var mimeType = context.contentResolver.getType(uri)
+
+// 2. Если система вернула null (это наш сжатый файл с путем file://...mp4), смотрим на расширение в тексте
         if (mimeType == null) {
-            mimeType = if (uriStr.lowercase().endsWith(".mp4")) "video/mp4" else "image/jpeg"
+            mimeType = if (uriStr.lowercase().endsWith(".mp4")) {
+                "video/mp4"
+            } else {
+                "image/jpeg"
+            }
         }
 
+// 3. Теперь точно знаем, видео это или нет
         val isVideo = mimeType.startsWith("video/")
         val ext = if (isVideo) "mp4" else "jpg"
 
-        // Получаем точный размер файла
+// Точный размер файла для прогресс-бара
         val fileSize = context.contentResolver.openAssetFileDescriptor(uri, "r")?.use { it.length } ?: 0L
 
         try {
-            // Путь к твоему новому UploadController в .NET
-            uploadClient.post("${BASE_URL}/api/upload/video") {
+            uploadClient.post("${AppConfig.apiUrl}?action=upload") {
+                // НЕ ЗАБЫВАЕМ АВТОРИЗАЦИЮ!
+                headers { append(HttpHeaders.Authorization, "Bearer ${AppConfig.apiKey}") }
+
                 setBody(MultiPartFormDataContent(
                     formData {
+                        // Ktor требует строки для текстовых полей формы
                         append("id", task.id.toString())
-                        append("description", task.description)
                         append("date_taken", task.dateTaken)
                         append("location", task.location)
 
-                        // "video" - это имя поля, которое ожидает наш C# код
+                        // ПОТОКОВАЯ ПЕРЕДАЧА: Отправляем файл, не забивая оперативную память
                         append(
-                            "video",
+                            "media",
                             ChannelProvider(size = fileSize) {
                                 context.contentResolver.openInputStream(uri)!!.toByteReadChannel()
                             },
@@ -130,6 +149,7 @@ object SyncHelper {
                     }
                 ))
 
+                // ОТСЛЕЖИВАНИЕ БАЙТОВ ДЛЯ КАРТОЧКИ
                 onUpload { bytesSentTotal, contentLength ->
                     val total = if (contentLength > 0) contentLength else fileSize
                     if (total > 0) {
@@ -140,16 +160,19 @@ object SyncHelper {
             }
         } catch (e: Exception) {
             e.printStackTrace()
-            throw e
+            throw e // Важно пробросить ошибку, чтобы интерфейс её поймал
         } finally {
-            uploadClient.close()
+            uploadClient.close() // Закрываем клиент, освобождаем ресурсы
         }
     }
 
-    // --- СИНХРОНИЗАЦИЯ (СКАЧИВАНИЕ СПИСКА) ---
+    // --- СИНХРОНИЗАЦИЯ (СКАЧИВАНИЕ БД) ---
     suspend fun fetchServerData(): List<ServerTask> {
         return try {
-            val response: SyncResponse = client.get("${BASE_URL}/api/upload/sync").body()
+            val response: SyncResponse = client.get(AppConfig.apiUrl) {
+                url { parameters.append("action", "sync_down") }
+                headers { append(HttpHeaders.Authorization, "Bearer ${AppConfig.apiKey}") }
+            }.body()
             response.tasks
         } catch (e: Exception) {
             e.printStackTrace()

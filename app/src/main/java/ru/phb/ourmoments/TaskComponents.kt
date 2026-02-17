@@ -1,5 +1,7 @@
 package ru.phb.ourmoments
 
+import android.content.Context
+import android.net.Uri
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
@@ -22,7 +24,69 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
+import java.io.InputStream
 
+// --- 1. МОДЕЛЬ ДАННЫХ ---
+data class LoveTask(
+    val id: Int,
+    val description: String,
+    val heightRatio: Float = 1.0f,
+    var completedUri: String? = null,
+    var dateTaken: String = "",
+    var location: String = "",
+    val isUploading: Boolean = false,
+    val isCompressing: Boolean = false,
+    val uploadProgress: Float = 0f
+) {
+    // Умная проверка: видео это или фото?
+    fun getIsVideo(context: Context): Boolean {
+        val uriString = completedUri ?: return false
+        val uri = Uri.parse(uriString)
+
+        // 1. Спрашиваем у системы
+        val type = context.contentResolver.getType(uri)
+        if (type?.startsWith("video") == true) return true
+
+        // 2. Проверяем расширение (на всякий случай)
+        val lower = uriString.lowercase()
+        return lower.contains("video") || lower.endsWith(".mp4") || lower.endsWith(".mov")
+    }
+}
+
+// --- 2. ХЕЛПЕР ДЛЯ ИЗВЛЕЧЕНИЯ МЕТАДАННЫХ (EXIF) ---
+object ExifHelper {
+    fun getPhotoDetails(context: Context, uri: Uri): Pair<String, String> {
+        var date = ""
+        var location = ""
+
+        try {
+            val inputStream: InputStream? = context.contentResolver.openInputStream(uri)
+            if (inputStream != null) {
+                val exif = androidx.exifinterface.media.ExifInterface(inputStream)
+
+                // Достаем дату
+                val dateTag = exif.getAttribute(androidx.exifinterface.media.ExifInterface.TAG_DATETIME)
+                if (!dateTag.isNullOrEmpty()) {
+                    date = dateTag.substringBefore(" ").replace(":", "-")
+                }
+
+                // Достаем координаты
+                val latLong = exif.latLong
+                if (latLong != null) {
+                    location = "Геометка найдена"
+                }
+
+                inputStream.close()
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+
+        return Pair(date, location)
+    }
+}
+
+// --- 3. UI-КОМПОНЕНТ КАРТОЧКИ ---
 @Composable
 fun TaskCard(
     task: LoveTask,
@@ -50,14 +114,13 @@ fun TaskCard(
     ) {
         Box(modifier = Modifier.fillMaxSize()) {
 
-            // --- 1. СЛОЙ С КОНТЕНТОМ ---
+            // СЛОЙ С КОНТЕНТОМ
             Crossfade(
                 targetState = isCompleted,
                 animationSpec = tween(500),
                 label = "cardFade"
             ) { completed ->
                 if (completed) {
-                    // Карточка с фото или видео
                     Box(modifier = Modifier.fillMaxSize()) {
                         if (isVideo) {
                             VideoPreview(uri = task.completedUri!!, modifier = Modifier.fillMaxSize())
@@ -70,7 +133,6 @@ fun TaskCard(
                             )
                         }
 
-                        // Дата в правом нижнем углу
                         if (task.dateTaken.isNotEmpty()) {
                             Box(
                                 modifier = Modifier
@@ -81,7 +143,7 @@ fun TaskCard(
                                     .padding(horizontal = 6.dp, vertical = 2.dp)
                             ) {
                                 Text(
-                                    text = task.dateTaken.take(10), // Берем только дату
+                                    text = task.dateTaken.take(10),
                                     color = Color.White,
                                     fontSize = 10.sp,
                                     fontWeight = FontWeight.Bold
@@ -90,7 +152,6 @@ fun TaskCard(
                         }
                     }
                 } else {
-                    // Пустая розовая карточка с текстом задания
                     Column(
                         modifier = Modifier.fillMaxSize().padding(12.dp),
                         horizontalAlignment = Alignment.CenterHorizontally,
@@ -111,13 +172,12 @@ fun TaskCard(
                 }
             }
 
-// --- 2. ВЕРХНИЙ СЛОЙ (ИНДИКАТОР) ---
-// Показываем, если идет ЛИБО загрузка, ЛИБО сжатие
+            // ВЕРХНИЙ СЛОЙ (ИНДИКАТОР ЗАГРУЗКИ)
             if (task.isUploading || task.isCompressing) {
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
-                        .background(Color.Black.copy(alpha = 0.6f)), // Чуть темнее фон
+                        .background(Color.Black.copy(alpha = 0.6f)),
                     contentAlignment = Alignment.Center
                 ) {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
@@ -129,7 +189,6 @@ fun TaskCard(
                         )
                         Spacer(modifier = Modifier.height(12.dp))
 
-                        // ТЕКСТ ЗАВИСИТ ОТ СТАТУСА
                         val statusText = if (task.isCompressing) "Сжатие видео..." else "Загрузка..."
                         Text(
                             text = statusText,
