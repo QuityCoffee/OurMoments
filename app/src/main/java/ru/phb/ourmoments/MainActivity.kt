@@ -26,12 +26,12 @@ enum class Environment {
 object AppConfig {
     // По умолчанию ставим ТЕСТ, чтобы случайно не сломать Прод при разработке
     var currentEnv: Environment = Environment.PROD
-
+    var isDebug: Boolean = true
     // Динамически отдаем нужный URL в зависимости от выбранной среды
     val apiUrl: String
         get() = when (currentEnv) {
-            Environment.PROD -> "http://quityrom.ru/api.php"
-            Environment.TEST -> "http://quityrom.ru/test/apitest.php"
+            Environment.PROD -> "https://quityrom.ru/api.php"
+            Environment.TEST -> "https://quityrom.ru/test/apitest.php"
         }
 
     // При желании можно сделать разные ключи безопасности

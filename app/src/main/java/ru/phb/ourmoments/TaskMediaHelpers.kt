@@ -45,50 +45,28 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.net.HttpURLConnection
 import java.net.URL
+
+import androidx.media3.exoplayer.DefaultLoadControl
+
+
 
 // ==========================================
 // 1. ДИАЛОГ ЗАГРУЗКИ (UploadTaskDialog)
 // ==========================================
 @Composable
-fun UploadTaskDialog(
-    task: LoveTask,
-    primaryColor: Color,
-    onDismiss: () -> Unit,
-    onUploadClick: () -> Unit
-) {
-    Dialog(
-        onDismissRequest = onDismiss,
-        properties = DialogProperties(usePlatformDefaultWidth = false)
-    ) {
-        Surface(
-            modifier = Modifier.fillMaxWidth(0.9f).wrapContentHeight(),
-            shape = RoundedCornerShape(24.dp),
-            color = Color.White,
-            tonalElevation = 8.dp
-        ) {
-            Column(
-                modifier = Modifier.padding(24.dp),
-                horizontalAlignment = Alignment.CenterHorizontally
-            ) {
+fun UploadTaskDialog(task: LoveTask, primaryColor: Color, onDismiss: () -> Unit, onUploadClick: () -> Unit) {
+    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        Surface(modifier = Modifier.fillMaxWidth(0.9f).wrapContentHeight(), shape = RoundedCornerShape(24.dp), color = Color.White, tonalElevation = 8.dp) {
+            Column(modifier = Modifier.padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                 Icon(Icons.Default.Favorite, null, tint = primaryColor, modifier = Modifier.size(48.dp))
                 Spacer(modifier = Modifier.height(16.dp))
                 Text("История №${task.id + 1}", fontSize = 14.sp, color = Color.Gray)
                 Spacer(modifier = Modifier.height(8.dp))
-                Text(
-                    text = task.description,
-                    fontSize = 20.sp,
-                    fontWeight = FontWeight.Bold,
-                    textAlign = TextAlign.Center,
-                    lineHeight = 28.sp
-                )
+                Text(text = task.description, fontSize = 20.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center, lineHeight = 28.sp)
                 Spacer(modifier = Modifier.height(32.dp))
-                Button(
-                    onClick = onUploadClick,
-                    colors = ButtonDefaults.buttonColors(containerColor = primaryColor),
-                    shape = RoundedCornerShape(16.dp),
-                    modifier = Modifier.fillMaxWidth().height(56.dp)
-                ) {
+                Button(onClick = onUploadClick, colors = ButtonDefaults.buttonColors(containerColor = primaryColor), shape = RoundedCornerShape(16.dp), modifier = Modifier.fillMaxWidth().height(56.dp)) {
                     Icon(Icons.Default.Add, null)
                     Spacer(modifier = Modifier.width(8.dp))
                     Text("Добавить фото/видео")
@@ -101,31 +79,14 @@ fun UploadTaskDialog(
 // ==========================================
 // 2. ФОНОВЫЙ ВОРКЕР (UploadWorker)
 // ==========================================
-class UploadWorker(
-    appContext: Context,
-    params: WorkerParameters
-) : CoroutineWorker(appContext, params) {
-
+class UploadWorker(appContext: Context, params: WorkerParameters) : CoroutineWorker(appContext, params) {
     override suspend fun doWork(): Result {
         val taskId = inputData.getInt("taskId", -1)
         if (taskId == -1) return Result.failure()
-
         val sharedPrefs = applicationContext.getSharedPreferences("love_tasks", Context.MODE_PRIVATE)
         val uri = sharedPrefs.getString("task_${taskId}_uri", null) ?: return Result.failure()
-        val date = sharedPrefs.getString("task_${taskId}_date", "") ?: ""
-        val loc = sharedPrefs.getString("task_${taskId}_loc", "") ?: ""
-
-        val tempTask = LoveTask(id = taskId, description = "", heightRatio = 1f).apply {
-            completedUri = uri
-            dateTaken = date
-            location = loc
-        }
-        return try {
-            SyncHelper.uploadTask(applicationContext, tempTask) {}
-            Result.success()
-        } catch (e: Exception) {
-            if (runAttemptCount < 3) Result.retry() else Result.failure()
-        }
+        val tempTask = LoveTask(id = taskId, description = "", heightRatio = 1f).apply { completedUri = uri }
+        return try { SyncHelper.uploadTask(applicationContext, tempTask, "Worker") {}; Result.success() } catch (e: Exception) { if (runAttemptCount < 3) Result.retry() else Result.failure() }
     }
 }
 
@@ -144,20 +105,46 @@ fun VideoPreview(uri: String, modifier: Modifier = Modifier) {
     val context = LocalContext.current
 
     val exoPlayer = remember {
-        ExoPlayer.Builder(context).build().apply {
-            repeatMode = Player.REPEAT_MODE_ALL
-            volume = 0f
-            playWhenReady = true
-        }
+        // 1. ЖЕСТКАЯ ДИЕТА ОЗУ: Ограничиваем размер буфера
+        val loadControl = DefaultLoadControl.Builder()
+            .setBufferDurationsMs(
+                2000,  // Минимальный буфер: 2 секунды
+                5000,  // Максимальный буфер: 5 секунд (раньше тут были десятки мегабайт)
+                1000,  // Буфер для старта воспроизведения: 1 сек
+                1000   // Буфер для возобновления: 1 сек
+            )
+            .build()
+
+        ExoPlayer.Builder(context)
+            .setLoadControl(loadControl) // Применяем диету
+            .build().apply {
+                repeatMode = Player.REPEAT_MODE_ALL
+                volume = 0f
+                playWhenReady = true
+            }
     }
 
     LaunchedEffect(uri) {
-        exoPlayer.setMediaItem(MediaItem.fromUri(uri))
+        // 2. ОБРЕЗКА: Создаем 5-секундный отрывок (от 0 до 5000 мс)
+        val mediaItem = MediaItem.Builder()
+            .setUri(uri)
+            .setClippingConfiguration(
+                MediaItem.ClippingConfiguration.Builder()
+                    .setStartPositionMs(0)
+                    .setEndPositionMs(5000) // Берем только первые 5 секунд
+                    .build()
+            )
+            .build()
+
+        exoPlayer.setMediaItem(mediaItem)
         exoPlayer.prepare()
     }
 
     DisposableEffect(Unit) {
-        onDispose { exoPlayer.release() }
+        onDispose {
+            // Обязательно освобождаем память, когда карточка уходит с экрана
+            exoPlayer.release()
+        }
     }
 
     AndroidView(
@@ -175,49 +162,16 @@ fun VideoPreview(uri: String, modifier: Modifier = Modifier) {
 object VideoCompressorHelper {
     fun compressVideo(context: Context, sourceUri: Uri): Flow<CompressionStatus> = callbackFlow {
         val fileName = "comp_${System.currentTimeMillis()}.mp4"
-
         VideoCompressor.start(
-            context = context,
-            uris = listOf(sourceUri),
-            isStreamable = false,
-            sharedStorageConfiguration = SharedStorageConfiguration(
-                saveAt = SaveLocation.movies, // Сохраняем в галерею!
-                subFolderName = "OurMoments"
-            ),
-            configureWith = Configuration(
-                quality = VideoQuality.MEDIUM,
-                videoNames = listOf(fileName),
-                isMinBitrateCheckEnabled = false,
-                videoBitrateInMbps = 3,
-                disableAudio = false,
-                keepOriginalResolution = false,
-                videoHeight = 1080.0,
-                videoWidth = 1920.0
-            ),
+            context = context, uris = listOf(sourceUri), isStreamable = false,
+            sharedStorageConfiguration = SharedStorageConfiguration(saveAt = SaveLocation.movies, subFolderName = "OurMoments"),
+            configureWith = Configuration(quality = VideoQuality.MEDIUM, videoNames = listOf(fileName), isMinBitrateCheckEnabled = false, videoBitrateInMbps = 3, disableAudio = false, keepOriginalResolution = false, videoHeight = 1080.0, videoWidth = 1920.0),
             listener = object : CompressionListener {
-                override fun onProgress(index: Int, percent: Float) {
-                    trySend(CompressionStatus.Progress(percent / 100f))
-                }
-
+                override fun onProgress(index: Int, percent: Float) { trySend(CompressionStatus.Progress(percent / 100f)) }
                 override fun onStart(index: Int) {}
-
-                override fun onSuccess(index: Int, size: Long, path: String?) {
-                    if (path != null) {
-                        trySend(CompressionStatus.Success(File(path)))
-                    } else {
-                        trySend(CompressionStatus.Error("Ошибка: путь к файлу пуст"))
-                    }
-                    close()
-                }
-
-                override fun onFailure(index: Int, failureMessage: String) {
-                    trySend(CompressionStatus.Error(failureMessage))
-                    close()
-                }
-
-                override fun onCancelled(index: Int) {
-                    close()
-                }
+                override fun onSuccess(index: Int, size: Long, path: String?) { if (path != null) trySend(CompressionStatus.Success(File(path))) else trySend(CompressionStatus.Error("Ошибка пути")); close() }
+                override fun onFailure(index: Int, failureMessage: String) { trySend(CompressionStatus.Error(failureMessage)); close() }
+                override fun onCancelled(index: Int) { close() }
             }
         )
         awaitClose { VideoCompressor.cancel() }
@@ -225,19 +179,25 @@ object VideoCompressorHelper {
 }
 
 // ==========================================
-// 4. ЗАГРУЗЧИК В ГАЛЕРЕЮ (GalleryDownloader)
+// 4. ПОТОКОВЫЙ ЗАГРУЗЧИК (GalleryDownloader)
 // ==========================================
 object GalleryDownloader {
     suspend fun downloadAndSaveToGallery(
         context: Context,
         fileUrl: String,
         taskId: Int,
-        isVideo: Boolean
+        isVideo: Boolean,
+        onProgress: (Float, String) -> Unit // <-- Добавили String для статуса
     ): String? = withContext(Dispatchers.IO) {
         try {
-            val connection = URL(fileUrl).openConnection()
-            val inputStream = connection.getInputStream()
+            onProgress(0f, "Установка соединения...")
+            val connection = URL(fileUrl).openConnection() as HttpURLConnection
+            connection.connect()
 
+            val fileLength = connection.contentLength
+            val inputStream = connection.inputStream
+
+            onProgress(0.05f, "Создание файла в Галерее...")
             val resolver = context.contentResolver
             val extension = if (isVideo) "mp4" else "jpg"
             val mimeType = if (isVideo) "video/mp4" else "image/jpeg"
@@ -254,29 +214,38 @@ object GalleryDownloader {
             }
 
             val collection = if (isVideo) {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) MediaStore.Video.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
-                else MediaStore.Video.Media.EXTERNAL_CONTENT_URI
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) MediaStore.Video.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY) else MediaStore.Video.Media.EXTERNAL_CONTENT_URI
             } else {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
-                else MediaStore.Images.Media.EXTERNAL_CONTENT_URI
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY) else MediaStore.Images.Media.EXTERNAL_CONTENT_URI
             }
 
             val uri = resolver.insert(collection, contentValues)
 
             uri?.let {
                 resolver.openOutputStream(it)?.use { outputStream ->
-                    inputStream.copyTo(outputStream)
+                    val buffer = ByteArray(8 * 1024)
+                    var totalBytesRead: Long = 0
+                    var count: Int
+
+                    while (inputStream.read(buffer).also { count = it } != -1) {
+                        totalBytesRead += count
+                        outputStream.write(buffer, 0, count)
+
+                        if (fileLength > 0) {
+                            val progress = totalBytesRead.toFloat() / fileLength.toFloat()
+                            val kbLoaded = totalBytesRead / 1024
+                            val totalKb = fileLength / 1024
+                            // Показываем сколько КБ скачано прямо в статусе
+                            onProgress(progress, "Загрузка: $kbLoaded / $totalKb KB")
+                        }
+                    }
                 }
 
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                    contentValues.clear()
-                    contentValues.put(MediaStore.MediaColumns.IS_PENDING, 0)
-                    resolver.update(it, contentValues, null, null)
-                }
-
+                onProgress(1f, "Готово!")
                 return@withContext it.toString()
             }
         } catch (e: Exception) {
+            onProgress(0f, "Ошибка: ${e.message}")
             e.printStackTrace()
         }
         return@withContext null

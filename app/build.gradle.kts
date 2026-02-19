@@ -55,11 +55,11 @@ android {
     buildTypes {
         debug {
             // Для кнопки RUN (Тест)
-            buildConfigField("String", "API_URL", "\"http://api.quityrcr.beget.tech/test/apiеtest.php\"")
+            buildConfigField("String", "API_URL", "\"https://quityrom.ru/test/apiеtest.php\"")
         }
         release {
             // Для сборки APK (Прод)
-            buildConfigField("String", "API_URL", "\"http://api.quityrcr.beget.tech/api.php\"")
+            buildConfigField("String", "API_URL", "\"https://quityrom.ru/api.php\"")
             signingConfig = signingConfigs.getByName("release")
             isMinifyEnabled = false
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
@@ -145,20 +145,31 @@ tasks.register("deployToBeget") {
 
         if (assembleProcess.exitValue() != 0) throw GradleException("❌ Сборка провалилась!")
 
-        // Шаг В: Отправляем готовый файл на сервер
+// Шаг В: Отправляем готовый файл на сервер
         val apk = layout.buildDirectory.file("outputs/apk/release/app-release.apk").get().asFile
         if (apk.exists()) {
-            println("🚀 Загрузка $nextVN на Beget...")
-            ProcessBuilder(
-                "curl", "-X", "POST",
+            println("🚀 Загрузка $nextVN на Ubuntu...")
+            val curlProcess = ProcessBuilder(
+                "curl", "-s", "-w", "\\nHTTP_CODE:%{http_code}", "-X", "POST",
                 "-F", "secret=MyLoveSecret2026quityromgmailcom",
                 "-F", "versionCode=$nextVC",
                 "-F", "versionName=$nextVN",
                 "-F", "apk=@${apk.absolutePath}",
-                "http://api.quityrcr.beget.tech/upload_apk.php"
-            ).inheritIO().start().waitFor()
+                "https://quityrom.ru/upload_apk.php"
+            ).redirectErrorStream(true).start()
 
-            println("\n✅ Релиз $nextVN опубликован. Телефон больше не будет просить 1.4!")
+            val curlOutput = curlProcess.inputStream.bufferedReader().readText()
+            curlProcess.waitFor()
+
+            println("\n--- Ответ сервера ---")
+            println(curlOutput)
+            println("---------------------")
+
+            if (!curlOutput.contains("HTTP_CODE:200")) {
+                throw GradleException("❌ Сервер отклонил загрузку! Смотри ответ сервера выше.")
+            }
+
+            println("\n✅ Релиз $nextVN опубликован. Телефон больше не будет просить версию!")
         }
     }
 }

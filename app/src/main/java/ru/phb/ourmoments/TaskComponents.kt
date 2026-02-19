@@ -29,59 +29,47 @@ import java.io.InputStream
 // --- 1. МОДЕЛЬ ДАННЫХ ---
 data class LoveTask(
     val id: Int,
+    val downloadStatus: String = "",
     val description: String,
     val heightRatio: Float = 1.0f,
     var completedUri: String? = null,
     var dateTaken: String = "",
     var location: String = "",
+    var category: String = "",
     val isUploading: Boolean = false,
     val isCompressing: Boolean = false,
-    val uploadProgress: Float = 0f
+    val uploadProgress: Float = 0f,
+    val isDownloading: Boolean = false,
+    val downloadProgress: Float = 0f
 ) {
-    // Умная проверка: видео это или фото?
     fun getIsVideo(context: Context): Boolean {
         val uriString = completedUri ?: return false
         val uri = Uri.parse(uriString)
-
-        // 1. Спрашиваем у системы
         val type = context.contentResolver.getType(uri)
         if (type?.startsWith("video") == true) return true
-
-        // 2. Проверяем расширение (на всякий случай)
         val lower = uriString.lowercase()
         return lower.contains("video") || lower.endsWith(".mp4") || lower.endsWith(".mov")
     }
 }
 
-// --- 2. ХЕЛПЕР ДЛЯ ИЗВЛЕЧЕНИЯ МЕТАДАННЫХ (EXIF) ---
+// --- 2. ХЕЛПЕР ДЛЯ EXIF ---
 object ExifHelper {
     fun getPhotoDetails(context: Context, uri: Uri): Pair<String, String> {
         var date = ""
         var location = ""
-
         try {
             val inputStream: InputStream? = context.contentResolver.openInputStream(uri)
             if (inputStream != null) {
                 val exif = androidx.exifinterface.media.ExifInterface(inputStream)
-
-                // Достаем дату
                 val dateTag = exif.getAttribute(androidx.exifinterface.media.ExifInterface.TAG_DATETIME)
                 if (!dateTag.isNullOrEmpty()) {
                     date = dateTag.substringBefore(" ").replace(":", "-")
                 }
-
-                // Достаем координаты
                 val latLong = exif.latLong
-                if (latLong != null) {
-                    location = "Геометка найдена"
-                }
-
+                if (latLong != null) location = "Геометка найдена"
                 inputStream.close()
             }
-        } catch (e: Exception) {
-            e.printStackTrace()
-        }
-
+        } catch (e: Exception) { e.printStackTrace() }
         return Pair(date, location)
     }
 }
@@ -98,7 +86,7 @@ fun TaskCard(
     val isCompleted = task.completedUri != null
     val isVideo = task.getIsVideo(context)
 
-    val cardBgColor = if (isCompleted) Color.White else Color(0xFFFFEBEE)
+    val cardBgColor = if (isCompleted) Color.White else Color(0xFFFCE4EC)
 
     Card(
         modifier = Modifier
@@ -110,21 +98,16 @@ fun TaskCard(
             ) { onClick() },
         shape = RoundedCornerShape(16.dp),
         colors = CardDefaults.cardColors(containerColor = cardBgColor),
-        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+        elevation = CardDefaults.cardElevation(defaultElevation = 6.dp)
     ) {
         Box(modifier = Modifier.fillMaxSize()) {
 
-            // СЛОЙ С КОНТЕНТОМ
-            Crossfade(
-                targetState = isCompleted,
-                animationSpec = tween(500),
-                label = "cardFade"
-            ) { completed ->
+            Crossfade(targetState = isCompleted, animationSpec = tween(500), label = "cardFade") { completed ->
                 if (completed) {
                     Box(modifier = Modifier.fillMaxSize()) {
-                        if (isVideo) {
+                        if (isVideo && !task.isDownloading) {
                             VideoPreview(uri = task.completedUri!!, modifier = Modifier.fillMaxSize())
-                        } else {
+                        } else if (!task.isDownloading) {
                             AsyncImage(
                                 model = task.completedUri,
                                 contentDescription = null,
@@ -133,6 +116,21 @@ fun TaskCard(
                             )
                         }
 
+                        // Бейджик Категории (Левый верхний угол)
+                        if (task.category.isNotBlank()) {
+                            Box(
+                                modifier = Modifier
+                                    .align(Alignment.TopStart)
+                                    .padding(8.dp)
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(primaryColor.copy(alpha = 0.8f))
+                                    .padding(horizontal = 8.dp, vertical = 4.dp)
+                            ) {
+                                Text(text = task.category, color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                            }
+                        }
+
+                        // Бейджик Даты (Правый нижний угол)
                         if (task.dateTaken.isNotEmpty()) {
                             Box(
                                 modifier = Modifier
@@ -142,12 +140,7 @@ fun TaskCard(
                                     .background(Color.Black.copy(alpha = 0.6f))
                                     .padding(horizontal = 6.dp, vertical = 2.dp)
                             ) {
-                                Text(
-                                    text = task.dateTaken.take(10),
-                                    color = Color.White,
-                                    fontSize = 10.sp,
-                                    fontWeight = FontWeight.Bold
-                                )
+                                Text(text = task.dateTaken.take(10), color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Bold)
                             }
                         }
                     }
@@ -157,6 +150,17 @@ fun TaskCard(
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.Center
                     ) {
+                        // Если есть категория у пустого задания — показываем
+                        if (task.category.isNotBlank()) {
+                            Text(
+                                text = task.category.uppercase(),
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = primaryColor,
+                                modifier = Modifier.padding(bottom = 8.dp)
+                            )
+                        }
+
                         Icon(icon, null, tint = primaryColor, modifier = Modifier.size(32.dp))
                         Spacer(modifier = Modifier.height(8.dp))
                         Text(
@@ -172,36 +176,31 @@ fun TaskCard(
                 }
             }
 
-            // ВЕРХНИЙ СЛОЙ (ИНДИКАТОР ЗАГРУЗКИ)
-            if (task.isUploading || task.isCompressing) {
+            // ИНДИКАТОР ПРОГРЕССА
+            if (task.isUploading || task.isCompressing || task.isDownloading) {
+                val currentProgress = if (task.isDownloading) task.downloadProgress else task.uploadProgress
                 Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .background(Color.Black.copy(alpha = 0.6f)),
+                    modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.7f)),
                     contentAlignment = Alignment.Center
                 ) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        CircularProgressIndicator(
-                            progress = { task.uploadProgress },
-                            color = Color.White,
-                            strokeWidth = 4.dp,
-                            modifier = Modifier.size(45.dp),
-                        )
+                    Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.padding(8.dp)) {
+                        CircularProgressIndicator(progress = { currentProgress }, color = Color.White, strokeWidth = 4.dp, modifier = Modifier.size(45.dp))
                         Spacer(modifier = Modifier.height(12.dp))
 
-                        val statusText = if (task.isCompressing) "Сжатие видео..." else "Загрузка..."
+                        val statusText = when {
+                            task.isCompressing -> "Сжатие видео..."
+                            task.isDownloading -> task.downloadStatus.ifBlank { "Загрузка..." } // <-- ДИНАМИЧЕСКИЙ СТАТУС
+                            else -> "Загрузка..."
+                        }
+
                         Text(
                             text = statusText,
-                            color = Color.White.copy(alpha = 0.8f),
-                            fontSize = 12.sp
-                        )
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Text(
-                            text = "${(task.uploadProgress * 100).toInt()}%",
                             color = Color.White,
-                            fontSize = 16.sp,
-                            fontWeight = FontWeight.Bold
+                            fontSize = 11.sp,
+                            textAlign = TextAlign.Center,
+                            lineHeight = 14.sp
                         )
+                        Text(text = "${(currentProgress * 100).toInt()}%", color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Bold)
                     }
                 }
             }
